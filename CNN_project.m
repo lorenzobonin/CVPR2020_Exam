@@ -8,8 +8,8 @@ imds = imageDatastore(project, ...
 class(imds) % what kind of object is imds
 %% 
  
-imds
-labelCount = countEachLabel(imds)
+imds;
+labelCount = countEachLabel(imds);
 unique(imds.Labels)
 %%  
 iimage=100;
@@ -48,18 +48,7 @@ imds.ReadFcn = @(x)imresize(imread(x),[64 64]);
 % automatic rescaling
 divideby=255;
 %imds.ReadFcn = @(x)double(imread(x))/divideby;
-%% 
-% Some random instances of the training set, with corresponding label:
 
-% show some instances
-figure;
-perm = randperm(length(imds.Labels),20);
-for ii = 1:20
-    subplot(4,5,ii);
-    imshow(imds.Files{perm(ii)}); 
-    title(imds.Labels(perm(ii)));
-end
-sgtitle('some instances of the training set')
 %% 
 % In order to estimate the generalization capability during training, we need 
 % to extract a valdation set from the provided training set. Let's take the 85% 
@@ -67,30 +56,30 @@ sgtitle('some instances of the training set')
 
 % split in training and validation sets: 85% - 15%
 quotaForEachLabel=0.85;
-[imdsTrain,imdsValidation] = splitEachLabel(imds,quotaForEachLabel,'randomize')
+[imdsTrain,imdsValidation] = splitEachLabel(imds,quotaForEachLabel,'randomize');
 
 %% Network design and training
 % create the structure of the network
 layers = [
     imageInputLayer([64 64 1],'Name','input','Normalization','zscore') 
     
-    convolution2dLayer(3,8,'Padding','same','Name','conv_1') 
+    convolution2dLayer(3,8,'WeightsInitializer','narrow-normal','Name','conv_1') 
     
     reluLayer('Name','relu_1')
 
     maxPooling2dLayer(2,'Stride',2,'Name','maxpool_1')
     
-    convolution2dLayer(3,16,'Padding','same','Name','conv_2')
+    convolution2dLayer(3,16,'WeightsInitializer','narrow-normal','Name','conv_2')
     
     reluLayer('Name','relu_2')
     
     maxPooling2dLayer(2,'Stride',2,'Name','maxpool_2')
     
-    convolution2dLayer(3,32,'Padding','same','Name','conv_3') 
+    convolution2dLayer(3,32,'WeightsInitializer','narrow-normal','Name','conv_3') 
    
     reluLayer('Name','relu_3')
     
-    fullyConnectedLayer(15,'Name','fc_1')
+    fullyConnectedLayer(15,'WeightsInitializer','narrow-normal','Name','fc_1')
     
     softmaxLayer('Name','softmax')
     
@@ -99,29 +88,22 @@ layers = [
     lgraph = layerGraph(layers); % to run the layers need a name
     analyzeNetwork(lgraph)
     
-    layers(1).Mean = 0;
-    layers(1).StandardDeviation = 0.01;
-    layer(2).Bias = 0;
 %% 
     % training options
 options = trainingOptions('sgdm', ...
-    'InitialLearnRate',0.01, ...
-    'MaxEpochs',5, ...
-    'Shuffle','every-epoch', ...
-    'ValidationData',imdsValidation, ... 
-    'ValidationFrequency',10, ...
-    'ValidationPatience',Inf,...
+    'ValidationData',imdsValidation, ...
+    'ValidationFrequency', 50, ...
+    'ValidationPatience', 15,...
     'Verbose',false, ...
     'MiniBatchSize',32, ...
     'ExecutionEnvironment','parallel',...
     'Plots','training-progress')
-
-
 %% 
 % Then we train the network.
 
 % train the net
 net = trainNetwork(imdsTrain,layers,options);
+% validation accuracy of about 25%
 
 %% 
 % However, let's evaluate the performance on the test set.
@@ -144,3 +126,98 @@ accuracy = sum(YPredicted == YTest)/numel(YTest)
 % confusion matrix
 figure
 plotconfusion(YTest,YPredicted)
+
+% point 2
+
+%%
+% data augmentation with reflection dx/sx
+augmenter = imageDataAugmenter(...
+    'RandXReflection', true)
+auimdsTrain = augmentedImageDatastore([64 64 1],imdsTrain,'DataAugmentation',augmenter);
+
+%%
+% train the network with the new data 
+% aunet = trainNetwork(auimdsTrain,layers,options);
+
+% first attempt:
+% +5% validation accuracy more or less
+% it seems that better results would be obtained with more than 30 epochs
+
+%%
+% add batch normalization layers
+
+layers = [
+    imageInputLayer([64 64 1],'Name','input','Normalization','zscore') 
+    
+    convolution2dLayer(3,8,'WeightsInitializer','narrow-normal','Name','conv_1')
+    
+    batchNormalizationLayer('Name', 'BN_1')
+    
+    reluLayer('Name','relu_1')
+    
+    dropoutLayer(.1 , 'Name','dropout_1')
+
+    maxPooling2dLayer(2,'Stride',2,'Name','maxpool_1')
+    
+    convolution2dLayer(5,16,'WeightsInitializer','narrow-normal','Name','conv_2')
+    
+    batchNormalizationLayer('Name', 'BN_2')
+    
+    reluLayer('Name','relu_2')
+    
+    dropoutLayer(.1 , 'Name','dropout_2')
+    
+    maxPooling2dLayer(2,'Stride',2,'Name','maxpool_2')
+    
+    convolution2dLayer(7,32,'WeightsInitializer','narrow-normal','Name','conv_3')
+    
+    batchNormalizationLayer('Name', 'BN_3')
+   
+    reluLayer('Name','relu_3')
+    
+    dropoutLayer(.1 , 'Name','dropout_3')
+    
+    fullyConnectedLayer(15,'WeightsInitializer','narrow-normal','Name','fc_1')
+    
+    dropoutLayer(.2 , 'Name','dropout_4')
+    
+    softmaxLayer('Name','softmax')
+    
+    classificationLayer('Name','output')];
+
+    lgraph = layerGraph(layers); % to run the layers need a name
+    analyzeNetwork(lgraph)
+   
+%%
+% new options
+
+options = trainingOptions('adam', ...
+'InitialLearnRate', 0.001, ...
+'ValidationData',imdsValidation, ...
+'MaxEpochs', 30, ...
+'ValidationFrequency', 50, ...
+'ValidationPatience', 5,...
+'Verbose',false, ...
+'MiniBatchSize',32, ...
+'ExecutionEnvironment','parallel',...
+'Plots','training-progress');
+    
+%%
+% new training
+    
+aunet = trainNetwork(auimdsTrain,layers,options);
+
+%%
+% - changing the dimension of the filters and adding the batch normalization
+% layers clearly improve the results (50% validation accuracy). A further improvement is provided by
+% changing the InitialErrorRate parameter and replacing 'sgdm' with 'adam'
+% (of about +5%)
+% - with a single dropout layer of p = 0.5 after the fully connected layer
+% there's no improvement
+% - with dropout layers of p = 0.2 after the Relu layers and the dropout 
+% layer after the fully connected one, the rusults are worse (40%)
+% - with a dropout layer after the last Relu and a dropout after the fully
+% connected the validation accuracy is of about 45%
+% - In general the dropouts layers don't seem to provide big
+% improvements. On the contrary, in many cases the results get worse (probably because of the batch
+% normalization layers)
